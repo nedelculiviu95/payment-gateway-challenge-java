@@ -1,7 +1,3 @@
-# Instructions for candidates
-
-This is the Java version of the Payment Gateway challenge. If you haven't already read this [README.md](https://github.com/cko-recruitment/) on the details of this exercise, please do so now.
-
 ## Requirements
 - JDK 17
 - Docker with Docker Compose for the bank simulator and integration tests
@@ -46,16 +42,6 @@ The bank connection is configured with Spring properties or environment variable
 
 The application validates these settings at startup. The bank URL must include
 an explicit port, such as `http://localhost:8080` or `https://bank.example:443`.
-Timeouts must be between 1 ms and 2,147,483,647 ms.
-
-The HTTP request factory does not automatically follow redirects for bank POST
-requests. The gateway does not implement automatic authorization retries.
-
-The bank client uses `RestTemplate.postForEntity` with typed request and response
-objects. Spring's message converters handle JSON and content types. The client
-requires HTTP `200` and a valid bank decision; bank `5xx` errors map to
-unavailability, while `4xx` and response conversion failures map to an invalid
-bank response. There is no custom response-body size limit.
 
 ## Processing a payment
 
@@ -74,7 +60,21 @@ curl -i http://localhost:8090/payment \
   }'
 ```
 
-A typical result is:
+Both authorized and declined payments return `201 Created`: a payment record
+has been created, regardless of the bank's decision. The `Location` header points
+to `GET /payment/{id}` for retrieving that record. The response body contains the
+payment ID, status, last four card digits, expiry, currency, and amount; it
+excludes the full card number and CVV.
+
+A typical authorized response includes:
+
+```http
+HTTP/1.1 201 Created
+Location: /payment/d8e540dd-a62d-47bd-bc0e-341e0aabcb8e
+Content-Type: application/json
+```
+
+With this body:
 
 ```json
 {
@@ -95,8 +95,7 @@ returned by your POST request):
 curl -i http://localhost:8090/payment/d8e540dd-a62d-47bd-bc0e-341e0aabcb8e
 ```
 
-Retrieval returns `200 OK` with the same payment fields. An unknown ID returns
-`404 Not Found`; malformed UUIDs return `400 Bad Request`.
+Retrieval returns `200 OK` with the same payment fields.
 
 ## Validation and failures
 
@@ -107,30 +106,59 @@ Retrieval returns `200 OK` with the same payment fields. An unknown ID returns
 - Expiry month must be 1 to 12 and year 1 to 9999. The combined expiry must be
   strictly later than the current UTC month. The current month is rejected.
 - Missing required values and values that fail field validation are rejected.
+- bank.connect-timeout and bank.read-timeout must be between 1 ms and 2,147,483,647 ms.
+- Floating-point JSON numbers are rejected for integer fields before field
+  validation. Other JSON conversions use Jackson's defaults; unknown fields are
+  ignored.
 
-Floating-point JSON numbers are rejected for integer fields before field
-validation. Other JSON conversions use Jackson's defaults; unknown fields are
-ignored.
+`POST /payment` requests that fail field validation or JSON parsing return
+`400 Bad Request` with
+`code: "PAYMENT_REJECTED"` and `status: "Rejected"`. Field validation failures
+identify the field, error code, and validation message, such as `currency` with
+`UNSUPPORTED_CURRENCY` and "Currency must be GBP, USD or EUR". Invalid JSON
+returns the message "The payment request JSON is invalid". These responses do
+not include submitted card values, stack traces, or internal exception messages.
+Neither failure calls the bank or creates a payment record.
 
-Requests that fail field validation or JSON parsing return `400` with
-`status: "Rejected"` and safe error details. They do not call the bank or create a
-payment. Positive amounts and strict future-month expiry are documented
-interpretations of the challenge.
+### `POST /payment` error responses
 
-| Failure | HTTP status | Error code |
-| --- | --- | --- |
-| Invalid payment request | 400 | `PAYMENT_REJECTED` |
-| Malformed payment ID | 400 | `INVALID_PAYMENT_ID` |
-| Unknown payment | 404 | `PAYMENT_NOT_FOUND` |
-| Bank unavailable | 503 | `BANK_UNAVAILABLE` |
-| Bank timeout | 504 | `BANK_TIMEOUT` |
-| Invalid bank response | 502 | `BANK_RESPONSE_INVALID` |
-| Unexpected application error | 500 | `INTERNAL_ERROR` |
+| Failure | HTTP status | Error code | Error message |
+| --- | --- | --- | --- |
+| Invalid payment request fields | 400 | `PAYMENT_REJECTED` | The payment request is invalid |
+| Invalid payment request JSON | 400 | `PAYMENT_REJECTED` | The payment request JSON is invalid |
+| Bank unavailable | 503 | `BANK_UNAVAILABLE` | The bank is unavailable; the payment outcome may be unknown |
+| Bank timeout | 504 | `BANK_TIMEOUT` | The bank request timed out; the payment outcome is unknown |
+| Invalid bank response | 502 | `BANK_RESPONSE_INVALID` | The bank returned an invalid response; the payment outcome may be unknown |
+| Unexpected application error | 500 | `INTERNAL_ERROR` | An unexpected error occurred |
 
-Bank failures never become a decline or rejection. A timeout can mean that the
+Bank failures never become a decline or rejection ad stored in the store. A timeout can mean that the
 bank processed the payment but its response was lost. The gateway does not
 implement automatic authorization retries; safe retries require bank-supported
 idempotency and reconciliation.
+
+Example error response:
+
+```http
+HTTP/1.1 400 
+Cache-Control: no-store
+Content-Type: application/json
+```
+
+With this body:
+
+```json
+{"code":"PAYMENT_REJECTED","message":"The payment request is invalid","status":"Rejected","errors":[{"field":"cvv","code":"INVALID_FORMAT","message":"CVV must contain 3 or 4 digits"}]}
+```
+
+### `GET /payment/{id}` error responses
+
+Retrieval reads the stored payment without calling the bank.
+
+| Failure | HTTP status | Error code | Error message |
+| --- | --- | --- | --- |
+| Malformed payment ID | 400 | `INVALID_PAYMENT_ID` | Payment ID must be a valid UUID |
+| Unknown payment | 404 | `PAYMENT_NOT_FOUND` | Payment not found |
+| Unexpected application error | 500 | `INTERNAL_ERROR` | An unexpected error occurred |
 
 ## Assumptions
 
@@ -146,16 +174,14 @@ idempotency and reconciliation.
 
 ## Key design decisions
 
-| Decision | Reason to document |
+| Decision | Rationale |
 | --- | --- |
-| One simple application | Keeps the exercise easy to follow, with separate responsibilities for receiving requests, checking details, contacting the bank, and storing results. |
-| `POST /payment` processes a payment | Checks the payment details, waits for the bank's decision, saves it, and returns a `201 Created` with payment details with a link for retrieval; invalid details return `400` without calling the bank. Both an authorized payment and a declined payment return `201 Created`, with a
-`Location` header and a complete payment result|
-| `GET /payment/{id}` retrieves a payment | Reads the stored result without calling the bank; returns `200` when found, `404` when missing, or `400` for an invalid ID. |
+| `POST /payment` returns the stored bank decision | Both authorized and declined payments create a record, so both return `201 Created`. The body provides the payment result immediately, and `Location: /payment/{id}` identifies the record for later retrieval. Invalid requests return `400` without calling the bank. |
+| `GET /payment/{id}` retrieves a payment | Reads the stored result without calling the bank; returns `200`|
+| Synchronous bank calls with typed messages | The payment flow waits for the bank's decision before responding, so a blocking client fits this Spring MVC application. `BankRestClient` uses `RestTemplate.postForEntity` to send typed requests and receive a typed response body together with its HTTP status. Spring handles JSON conversion, while the client checks for HTTP `200`, validates the decision, and maps bank failures to gateway errors. |
 | Temporary storage | Records stay in memory rather than a database and disappear when the application restarts. |
 | Only confirmed decisions are stored | Both `Authorized` and `Declined` payments get a record in the in-memory storage; invalid requests and bank failures do not. |
 | Protected payment records via immutable Payment objects | Stored payments cannot be changed after creation and exclude the full card number and security code (CVV). |
-| Checks match the brief | Keeps validation within the exercise's scope without adding extra card-number verification rules. |
 | Integration Tests with the bank | They cover key scenarios: authorized and declined payments followed by retrieval, and the simulator's `503` response |
 | Logging | Requests produce `Before request` and `After request` messages in the console, showing the method and URL path. Request bodies, headers, and query strings are excluded. Requests are not logged to files.|
 
@@ -164,7 +190,7 @@ idempotency and reconciliation.
 Possible next steps beyond this exercise:
 
 - **Using test containers:** At the moment to run the integration tests, the bank-simulator container
-must run in order to run the integration tests.
+  must run in order to run the integration tests.
 - **Central configuration:** Keep supported currencies in shared settings alongside
   the bank URLs and timeouts, which are already configurable.
 - **Improved logging:** Make requests and failures easier to trace and add file logging as well, not only console
