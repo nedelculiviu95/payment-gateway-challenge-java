@@ -174,16 +174,16 @@ Retrieval reads the stored payment without calling the bank.
 
 ## Key design decisions
 
-| Decision | Rationale |
-| --- | --- |
-| `POST /payment` returns the stored bank decision | Both authorized and declined payments create a record, so both return `201 Created`. The body provides the payment result immediately, and `Location: /payment/{id}` identifies the record for later retrieval. Invalid requests return `400` without calling the bank. |
-| `GET /payment/{id}` retrieves a payment | Reads the stored result without calling the bank; returns `200`|
-| Synchronous bank calls with typed messages | The payment flow waits for the bank's decision before responding, so a blocking client fits this Spring MVC application. `BankRestClient` uses `RestTemplate.postForEntity` to send typed requests and receive a typed response body together with its HTTP status. Spring handles JSON conversion, while the client checks for HTTP `200`, validates the decision, and maps bank failures to gateway errors. |
-| Temporary storage | Records stay in memory rather than a database and disappear when the application restarts. |
-| Only confirmed decisions are stored | Both `Authorized` and `Declined` payments get a record in the in-memory storage; invalid requests and bank failures do not. |
-| Protected payment records via immutable Payment objects | Stored payments cannot be changed after creation and exclude the full card number and security code (CVV). |
-| Integration Tests with the bank | They cover key scenarios: authorized and declined payments followed by retrieval, and the simulator's `503` response |
-| Logging | Requests produce `Before request` and `After request` messages in the console, showing the method and URL path. Request bodies, headers, and query strings are excluded. Requests are not logged to files.|
+| Decision | Rationale                                                                                                                                                                                                                                                                                         |
+| --- |---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `POST /payment` returns the stored bank decision | Both authorized and declined payments create a record, so both return `201 Created`. The body provides the payment result immediately, and `Location: /payment/{id}` identifies the record for later retrieval. Invalid requests return `400` without calling the bank.                           |
+| `GET /payment/{id}` retrieves a payment | Reads the stored result without calling the bank; returns `200`                                                                                                                                                                                                                                   |
+| Synchronous bank calls with typed messages | The payment flow waits for the bank's decision before responding, so a blocking client fits this Spring MVC application. `BankRestClient` uses `RestTemplate.postForEntity` to send typed requests and receive a typed response body together with its HTTP status. Spring handles JSON conversion |
+| Temporary storage | Records stay in memory rather than a database and disappear when the application restarts.                                                                                                                                                                                                        |
+| Only confirmed decisions are stored | Both `Authorized` and `Declined` payments get a record in the in-memory storage; invalid requests and bank failures do not.                                                                                                                                                                       |
+| Protected payment records via immutable Payment objects | Stored payments cannot be changed after creation and exclude the full card number and security code (CVV).                                                                                                                                                                                        |
+| Integration Tests with the bank | They cover key scenarios: authorized and declined payments followed by retrieval, and the simulator's `503` response                                                                                                                                                                  |
+| Logging | Requests produce `Before request` and `After request` messages in the console, showing the method and URL path. Request bodies, headers, and query strings are excluded. Requests are not logged to files.                                                                                        |
 
 ### Future improvements
 
