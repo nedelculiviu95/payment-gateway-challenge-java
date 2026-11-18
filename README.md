@@ -202,7 +202,7 @@ Possible next steps beyond this exercise:
   to access only their own payments.
 - **TLS:** Require encrypted HTTPS connections for both merchant requests and bank calls.
 
-## Verification and design
+## Verification
 
 Run the unit tests:
 
